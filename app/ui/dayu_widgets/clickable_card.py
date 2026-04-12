@@ -108,6 +108,9 @@ class ClickMeta(QtWidgets.QWidget):
     ):
         super(ClickMeta, self).__init__(parent)
         self.setAttribute(QtCore.Qt.WA_StyledBackground)
+        
+        self._is_highlighted = False
+        self._applying_highlight = False
 
         # Initialize Widgets
         self._cover_label = QtWidgets.QLabel()
@@ -225,16 +228,28 @@ class ClickMeta(QtWidgets.QWidget):
         super(ClickMeta, self).mousePressEvent(event)
 
     def set_highlight(self, highlighted):
-        if not hasattr(self, '_original_background_color'):
-            self._original_background_color = self.palette().color(self.backgroundRole())
-        
-        if highlighted:
-            highlight_color = self._original_background_color.darker(130)
-            self.setStyleSheet(f"background-color: {highlight_color.name()}; border: none; padding: 0px;")
-        else:
-            self.setStyleSheet(f"background-color: {self._original_background_color.name()}; border: none; padding: 0px;")
+        self._is_highlighted = highlighted
+        self._apply_highlight()
 
-        self.update()
+    def _apply_highlight(self):
+        # Prevent infinite recursion when setStyleSheet triggers another StyleChange event
+        if self._applying_highlight:
+            return
+        self._applying_highlight = True
+        try:
+            if self._is_highlighted:
+                color = dayu_theme.background_selected_color
+            else:
+                color = dayu_theme.background_color
+            self.setStyleSheet(f"ClickMeta {{ background-color: {color}; border: none; padding: 0px; }}")
+        finally:
+            self._applying_highlight = False
+
+    def changeEvent(self, event):
+        super(ClickMeta, self).changeEvent(event)
+        # Re-apply highlight if palette or style changes (e.g., toggling light/dark mode)
+        if event.type() == QtCore.QEvent.Type.PaletteChange or event.type() == QtCore.QEvent.Type.StyleChange:
+            self._apply_highlight()
 
     def set_skipped(self, skipped: bool):
         """Visually mark / un-mark this row as skipped."""

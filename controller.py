@@ -38,6 +38,9 @@ from modules.utils.exceptions import InsufficientCreditsException, ContentFlagge
 # Ensure any pre-declared mandatory models
 ensure_mandatory_models()
 
+# Toggle memory logging.
+ENABLE_MEMLOGGER = False
+
 class ComicTranslate(ComicTranslateUI):
     image_processed = QtCore.Signal(int, object, str)
     patches_processed = QtCore.Signal(list, str)
@@ -50,6 +53,19 @@ class ComicTranslate(ComicTranslateUI):
     def __init__(self, parent=None):
         super(ComicTranslate, self).__init__(parent)
         self.setWindowTitle("Project1.ctpr[*]")
+
+        # Memory logging toggle for local diagnostics.
+        # Start as early as possible after QWidget init so we can attribute idle RSS.
+        self._memlogger = None
+        if ENABLE_MEMLOGGER:
+            try:
+                from modules.utils.memlog import MemLogger
+
+                self._memlogger = MemLogger(self)
+                self._memlogger.start()
+                self._memlogger.emit("after_super_init")
+            except Exception:
+                self._memlogger = None
 
         # Explicitly set window icon to ensure it persists after splash screen
         current_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +89,7 @@ class ComicTranslate(ComicTranslateUI):
         self.in_memory_patches = {}  # Store patches in memory for each image
         self.image_cards = []
         self.current_card = None
-        self.max_images_in_memory = 10
+        self.max_images_in_memory = 5
         self.loaded_images = []
 
         self.undo_group = QUndoGroup(self)
@@ -81,9 +97,15 @@ class ComicTranslate(ComicTranslateUI):
         self.project_file = None
         self.temp_dir = tempfile.mkdtemp()
         self._manual_dirty = False
+        self._dirty_revision = 0
         self._skip_close_prompt = False
 
         self.pipeline = ComicTranslatePipeline(self)
+        try:
+            if self._memlogger is not None:
+                self._memlogger.emit("after_pipeline_init")
+        except Exception:
+            pass
         self.file_handler = FileHandler()
         self.threadpool = QThreadPool()
         self.current_worker = None
@@ -99,6 +121,11 @@ class ComicTranslate(ComicTranslateUI):
         self.task_runner_ctrl = TaskRunnerController(self)
         self.batch_report_ctrl = BatchReportController(self)
         self.manual_workflow_ctrl = ManualWorkflowController(self)
+        try:
+            if self._memlogger is not None:
+                self._memlogger.emit("after_controllers_init")
+        except Exception:
+            pass
 
         self.image_skipped.connect(self.image_ctrl.on_image_skipped)
         self.image_processed.connect(self.image_ctrl.on_image_processed)
@@ -106,6 +133,7 @@ class ComicTranslate(ComicTranslateUI):
         self.progress_update.connect(self.update_progress)
         self.blk_rendered.connect(self.text_ctrl.on_blk_rendered)
         self.render_state_ready.connect(self.image_ctrl.on_render_state_ready)
+        self.render_state_ready.connect(self.project_ctrl._on_batch_page_done)
         self.download_event.connect(self.on_download_event)
 
         self.connect_ui_elements()
@@ -113,6 +141,10 @@ class ComicTranslate(ComicTranslateUI):
 
         self.project_ctrl.load_main_page_settings()
         self.settings_page.load_settings()
+        self.project_ctrl.initialize_autosave()
+
+        # Populate the home screen with any previously-saved recent projects
+        self.startup_home.populate(self.project_ctrl.get_recent_projects())
 
         self._processing_page_change = False  # Flag to prevent recursive page change handling
 
@@ -186,6 +218,12 @@ class ComicTranslate(ComicTranslateUI):
         self.image_viewer.page_changed.connect(self.webtoon_ctrl.on_page_changed)
         self.image_viewer.clear_text_edits.connect(self.text_ctrl.clear_text_edits)
 
+        try:
+            if self._memlogger is not None:
+                self._memlogger.emit("after_signal_wiring")
+        except Exception:
+            pass
+
         # Rendering
         self.font_dropdown.currentTextChanged.connect(self.text_ctrl.on_font_dropdown_change)
         self.font_size_dropdown.currentTextChanged.connect(self.text_ctrl.on_font_size_change)
@@ -213,8 +251,21 @@ class ComicTranslate(ComicTranslateUI):
         # New project and safety confirmations
         self.new_project_button.clicked.connect(self._on_new_project_clicked)
 
+        # Home screen signals
+        self.startup_home.sig_open_files.connect(self._guarded_thread_load_images)
+        self.startup_home.sig_open_project.connect(self._open_project_from_home)
+        self.startup_home._sig_remove_one.connect(self._on_home_remove_recent)
+        self.startup_home._sig_clear_all.connect(self._on_home_clear_recent)
+        self.startup_home._sig_pin.connect(
+            lambda path, pinned: self.project_ctrl.toggle_pin_project(path, pinned)
+        )
+
     def _guarded_thread_load_images(self, paths: list[str]):
         """Wrap thread_load_images with unsaved-project confirmation and clear state."""
+        if not paths:
+            # Empty list = "New Project" action from the home screen
+            self._on_new_project_clicked()
+            return
         if not self._confirm_start_new_project():
             return
         self.image_ctrl.thread_load_images(paths)
@@ -223,13 +274,37 @@ class ComicTranslate(ComicTranslateUI):
         """Clear the app to initial state after confirmation."""
         if not self._confirm_start_new_project():
             return
-        # Clear state and show the drag area
+        self.project_ctrl.clear_recovery_checkpoint()
+        # Clear state and switch to the main editor showing the drag area
         self.image_ctrl.clear_state()
         self.central_stack.setCurrentWidget(self.drag_browser)
+        self.show_main_page()
+        self.project_ctrl.ensure_autosave_project_file_for_new_project()
         # Reset webtoon mode UI state
         if self.webtoon_mode:
             self.webtoon_toggle.setChecked(False)
         self.webtoon_mode = False
+
+    # Home screen helper methods
+
+    def _open_project_from_home(self, path: str):
+        """Load a .ctpr project selected on the home screen."""
+        if not self._confirm_start_new_project():
+            return
+        if not path or not path.lower().endswith(".ctpr"):
+            # Treat as generic files
+            self._guarded_thread_load_images([path])
+            return
+        self.project_ctrl.thread_load_project(path)
+        self.show_main_page()
+
+    def _on_home_remove_recent(self, path: str):
+        """Persist removal of one entry from the recent list."""
+        self.project_ctrl.remove_recent_project(path)
+
+    def _on_home_clear_recent(self):
+        """Persist clearing of the entire recent list."""
+        self.project_ctrl.clear_recent_projects()
 
     def connect_rect_item_signals(self, rect_item, force_reconnect: bool = False): return self.rect_item_ctrl.connect_rect_item_signals(rect_item, force_reconnect=force_reconnect)
     def apply_inpaint_patches(self, patches): return self.image_ctrl.apply_inpaint_patches(patches)
@@ -261,7 +336,15 @@ class ComicTranslate(ComicTranslateUI):
     def has_unsaved_changes(self) -> bool:
         return bool(self._manual_dirty) or self._any_undo_dirty()
 
+    def _bump_dirty_revision(self, *_):
+        self._dirty_revision += 1
+        try:
+            self.project_ctrl.notify_project_dirty_revision_changed()
+        except Exception:
+            pass
+
     def mark_project_dirty(self):
+        self._bump_dirty_revision()
         self._manual_dirty = True
         self._update_window_modified()
 
@@ -419,6 +502,11 @@ class ComicTranslate(ComicTranslateUI):
         self.batch_report_ctrl.register_batch_skip(image_path, skip_reason, error)
 
     def start_batch_process(self):
+        try:
+            if self._memlogger is not None:
+                self._memlogger.emit("batch_start_all")
+        except Exception:
+            pass
         for image_path in self.image_files:
             source_lang = self.image_states[image_path]['source_lang']
             target_lang = self.image_states[image_path]['target_lang']
@@ -432,6 +520,8 @@ class ComicTranslate(ComicTranslateUI):
         self._batch_cancel_requested = False
         self.translate_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self.save_as_project_button.setEnabled(False)
+        self.webtoon_toggle.setEnabled(False)
         self.progress_bar.setVisible(True)
         
         # Choose batch processor based on webtoon mode
@@ -441,6 +531,11 @@ class ComicTranslate(ComicTranslateUI):
             self.run_threaded(self.pipeline.batch_process, None, self.default_error_handler, self.on_batch_process_finished)
 
     def batch_translate_selected(self, selected_file_names: list[str]):
+        try:
+            if self._memlogger is not None:
+                self._memlogger.emit("batch_start_selected")
+        except Exception:
+            pass
         # map base‐name back to full paths
         selected_paths = [
             p for p in self.image_files
@@ -468,6 +563,8 @@ class ComicTranslate(ComicTranslateUI):
         self._batch_cancel_requested = False
         self.translate_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self.save_as_project_button.setEnabled(False)
+        self.webtoon_toggle.setEnabled(False)
         self.progress_bar.setVisible(True)
         
         # Choose batch processor based on webtoon mode
@@ -489,6 +586,11 @@ class ComicTranslate(ComicTranslateUI):
             )
 
     def on_batch_process_finished(self):
+        try:
+            if self._memlogger is not None:
+                self._memlogger.emit("batch_finished")
+        except Exception:
+            pass
         was_cancelled = self._batch_cancel_requested
         report = self._finalize_batch_report(was_cancelled)
         self._batch_active = False
@@ -496,11 +598,22 @@ class ComicTranslate(ComicTranslateUI):
         self.progress_bar.setVisible(False)
         self.translate_button.setEnabled(True)
         self.cancel_button.setEnabled(True)
+        self.save_as_project_button.setEnabled(True)
+        self.webtoon_toggle.setEnabled(True)
         self.selected_batch = []
         if report and report["skipped_count"] > 0:
             Messages.show_batch_skipped_summary(self, report["skipped_count"])
         elif not was_cancelled:
             Messages.show_translation_complete(self)
+
+        # Drop cached models/sessions after batch to keep RAM bounded.
+        try:
+            if self.pipeline is not None:
+                self.pipeline.release_model_caches()
+            if self._memlogger is not None:
+                self._memlogger.emit("model_caches_released")
+        except Exception:
+            pass
 
     def disable_hbutton_group(self):
         for button in self.hbutton_group.get_button_group().buttons():
@@ -654,6 +767,7 @@ class ComicTranslate(ComicTranslateUI):
         else:
             self._skip_close_prompt = False
 
+        self.project_ctrl.shutdown_autosave(clear_recovery=True)
         self.shutdown()
 
         # Save all settings when the application is closed

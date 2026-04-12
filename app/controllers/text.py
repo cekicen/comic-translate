@@ -594,7 +594,7 @@ class TextController:
 
         try:
             # Set values
-            self.main.font_dropdown.setCurrentText(text_item.font_family)
+            self.main.set_font(text_item.font_family)
             self.main.font_size_dropdown.setCurrentText(str(int(text_item.font_size)))
 
             self.main.line_spacing_dropdown.setCurrentText(str(text_item.line_spacing))
@@ -659,7 +659,7 @@ class TextController:
 
         try:
             # Set values
-            self.main.font_dropdown.setCurrentText(font_family) if font_family else None
+            self.main.set_font(font_family) if font_family else None
             self.main.font_size_dropdown.setCurrentText(str(int(font_size))) if font_size else None
 
             if text_color is not None:
@@ -764,17 +764,17 @@ class TextController:
                         if blk_key in existing_keys:
                             continue
 
-                        x1, y1, width, height = blk.xywh
+                        x1, y1, block_width, block_height = blk.xywh
                         translation = blk.translation
                         if not translation or len(translation) == 1:
                             continue
 
                         vertical = is_vertical_block(blk, trg_lng_cd)
-                        wrapped, font_size = pyside_word_wrap(
+                        wrapped, font_size, rendered_width, rendered_height = pyside_word_wrap(
                             translation,
                             font_family,
-                            width,
-                            height,
+                            block_width,
+                            block_height,
                             line_spacing,
                             outline_width,
                             bold,
@@ -785,6 +785,7 @@ class TextController:
                             max_font_size,
                             min_font_size,
                             vertical,
+                            return_metrics=True,
                         )
                         if is_no_space_lang(trg_lng_cd):
                             wrapped = wrapped.replace(" ", "")
@@ -807,7 +808,8 @@ class TextController:
                             rotation=blk.angle,
                             scale=1.0,
                             transform_origin=blk.tr_origin_point if blk.tr_origin_point else (0, 0),
-                            width=width,
+                            width=rendered_width,
+                            height=rendered_height,
                             vertical=vertical,
                         )
                         new_text_items_state.append(text_props.to_dict())

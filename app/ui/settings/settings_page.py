@@ -7,7 +7,7 @@ from PySide6.QtGui import QFont, QFontDatabase
 
 from .settings_ui import SettingsPageUI
 from modules.utils.device import is_gpu_available
-from modules.utils.paths import get_user_data_dir
+from modules.utils.paths import get_user_data_dir, get_default_project_autosave_dir
 
 # Dictionary to map old model names to the newest versions in settings
 OCR_MIGRATIONS = {
@@ -89,12 +89,26 @@ class SettingsPage(QtWidgets.QWidget):
         }
 
     def get_export_settings(self):
+        owner = self.window()
+        title_bar = getattr(owner, "title_bar", None)
+        settings = QSettings("ComicLabs", "ComicTranslate")
+        settings.beginGroup('export')
+        persisted_autosave_enabled = settings.value('project_autosave_enabled', False, type=bool)
+        settings.endGroup()
+        if title_bar is not None:
+            autosave_enabled = bool(title_bar.autosave_switch.isChecked())
+        else:
+            autosave_enabled = bool(persisted_autosave_enabled)
+        autosave_folder = self.ui.project_autosave_folder_input.text().strip()
+        if not autosave_folder:
+            autosave_folder = get_default_project_autosave_dir()
         settings = {
-            'auto_save': self.ui.auto_save_checkbox.isChecked(),
             'export_raw_text': self.ui.raw_text_checkbox.isChecked(),
             'export_translated_text': self.ui.translated_text_checkbox.isChecked(),
             'export_inpainted_image': self.ui.inpainted_image_checkbox.isChecked(),
-            'archive_save_as': self.ui.archive_save_as_combo.currentText(),
+            'project_autosave_enabled': autosave_enabled,
+            'project_autosave_interval_min': int(self.ui.project_autosave_interval_spinbox.value()),
+            'project_autosave_folder': autosave_folder,
         }
         return settings
 
@@ -174,20 +188,17 @@ class SettingsPage(QtWidgets.QWidget):
             os.makedirs(user_font_dir, exist_ok=True)
 
         if file_paths:
-            for file in file_paths:
-                shutil.copy(file, user_font_dir)
-                
-            # Reload fonts from user directory
-            font_files = [os.path.join(user_font_dir, f) for f in os.listdir(user_font_dir) 
-                      if f.lower().endswith((".ttf", ".ttc", ".otf", ".woff", ".woff2"))]
-            
-            font_families = []
-            for font in font_files:
-                font_family = self.add_font_family(font)
-                font_families.append(font_family)
-            
-            if font_families:
-                self.font_imported.emit(font_families[0])
+            loaded_families = []
+            for src in file_paths:
+                dst = os.path.join(user_font_dir, os.path.basename(src))
+                if os.path.normcase(src) != os.path.normcase(dst):
+                    shutil.copy(src, dst)
+                font_family = self.add_font_family(dst)
+                if font_family:
+                    loaded_families.append(font_family)
+
+            if loaded_families:
+                self.font_imported.emit(loaded_families[0])
 
     def select_color(self, outline = False):
         default_color = QtGui.QColor('#000000') if not outline else QtGui.QColor('#FFFFFF')
@@ -224,6 +235,12 @@ class SettingsPage(QtWidgets.QWidget):
 
         for key, value in all_settings.items():
             process_group(key, value, settings)
+
+        # Remove deprecated export keys from older versions.
+        settings.beginGroup('export')
+        settings.remove('auto_save')
+        settings.remove('archive_save_as')
+        settings.endGroup()
 
         # Save credentials separately if save_keys is checked
         credentials = self.get_credentials()
@@ -290,7 +307,7 @@ class SettingsPage(QtWidgets.QWidget):
         if is_gpu_available():
             self.ui.use_gpu_checkbox.setChecked(settings.value('use_gpu', False, type=bool))
         else:
-             self.ui.use_gpu_checkbox.setChecked(False)
+            self.ui.use_gpu_checkbox.setChecked(False)
 
         # Load HD strategy settings
         settings.beginGroup('hd_strategy')
@@ -319,14 +336,20 @@ class SettingsPage(QtWidgets.QWidget):
 
         # Load export settings
         settings.beginGroup('export')
-        self.ui.auto_save_checkbox.setChecked(settings.value('auto_save', False, type=bool))
         self.ui.raw_text_checkbox.setChecked(settings.value('export_raw_text', False, type=bool))
         self.ui.translated_text_checkbox.setChecked(settings.value('export_translated_text', False, type=bool))
         self.ui.inpainted_image_checkbox.setChecked(settings.value('export_inpainted_image', False, type=bool))
-
-        # New: single global archive output format
-        archive_save_as = settings.value('archive_save_as', 'zip')
-        self.ui.archive_save_as_combo.setCurrentText(str(archive_save_as))
+        autosave_enabled = settings.value('project_autosave_enabled', False, type=bool)
+        owner = self.parent()
+        title_bar = getattr(owner, "title_bar", None)
+        if title_bar is not None:
+            title_bar.set_autosave_checked(bool(autosave_enabled))
+        self.ui.project_autosave_interval_spinbox.setValue(
+            settings.value('project_autosave_interval_min', 3, type=int)
+        )
+        self.ui.project_autosave_folder_input.setText(
+            settings.value('project_autosave_folder', get_default_project_autosave_dir(), type=str)
+        )
 
         settings.endGroup()  # export
 
