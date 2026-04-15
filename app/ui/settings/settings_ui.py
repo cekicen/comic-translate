@@ -14,6 +14,7 @@ from .llms_page import LlmsPage
 from .text_rendering_page import TextRenderingPage
 from .project_page import ProjectPage
 from .export_page import ExportPage
+from .shortcuts_page import ShortcutsPage
 
 
 class CurrentPageStack(QtWidgets.QStackedWidget):
@@ -61,7 +62,7 @@ class SettingsPageUI(QtWidgets.QWidget):
                                     self.tr("Google Gemini"), self.tr("DeepL"), self.tr("Anthropic Claude"), self.tr("Yandex"), self.tr("xAI")]
         
         self.supported_translators = [self.tr("GPT-4.1"), self.tr("GPT-4.1-mini"), self.tr("DeepL"),
-                                    self.tr("Claude-4.5-Sonnet"), self.tr("Claude-4.5-Haiku"),
+                                    self.tr("Claude-4.6-Sonnet"), self.tr("Claude-4.5-Haiku"),
                                     self.tr("Gemini-2.5-Flash"), self.tr("Gemini-3.0-Flash"), self.tr("Gemini-3.0-Pro"), self.tr("Yandex"), self.tr("Google Translate"),
                                     self.tr("Microsoft Translator"), self.tr("Deepseek Chat"), self.tr("Grok-4.1-Fast"), self.tr("Custom"),]
         
@@ -104,7 +105,7 @@ class SettingsPageUI(QtWidgets.QWidget):
             self.tr("GPT-4.1"): "GPT-4.1",
             self.tr("GPT-4.1-mini"): "GPT-4.1-mini",
             self.tr("DeepL"): "DeepL",
-            self.tr("Claude-4.5-Sonnet"): "Claude-4.5-Sonnet",
+            self.tr("Claude-4.6-Sonnet"): "Claude-4.6-Sonnet",
             self.tr("Claude-4.5-Haiku"): "Claude-4.5-Haiku",
             self.tr("Gemini-2.5-Flash"): "Gemini-2.5-Flash",
             self.tr("Gemini-3.0-Flash"): "Gemini-3.0-Flash",
@@ -185,6 +186,7 @@ class SettingsPageUI(QtWidgets.QWidget):
         self.text_rendering_page = TextRenderingPage(parent=self)
         self.project_page = ProjectPage(parent=self)
         self.export_page = ExportPage(parent=self)
+        self.shortcuts_page = ShortcutsPage(parent=self)
 
         # Backward-compatible attribute proxies for existing SettingsPage references
         # Personalization
@@ -237,6 +239,7 @@ class SettingsPageUI(QtWidgets.QWidget):
         self.stacked_widget.addWidget(self.text_rendering_page)
         self.stacked_widget.addWidget(self.project_page)
         self.stacked_widget.addWidget(self.export_page)
+        self.stacked_widget.addWidget(self.shortcuts_page)
 
         settings_layout = QtWidgets.QHBoxLayout()
         
@@ -289,6 +292,7 @@ class SettingsPageUI(QtWidgets.QWidget):
             {"title": self.tr("Text Rendering"), "avatar": MPixmap(".svg")},
             {"title": self.tr("Project"), "avatar": MPixmap(".svg")},
             {"title": self.tr("Export"), "avatar": MPixmap(".svg")},
+            {"title": self.tr("Shortcuts"), "avatar": MPixmap(".svg")},
         ]):
             nav_card = ClickMeta(extra=False)
             nav_card.setup_data(setting)
